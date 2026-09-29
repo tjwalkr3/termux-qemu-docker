@@ -5,11 +5,14 @@ ALPINE_VERSION="3.24"
 ISO_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/aarch64/alpine-virt-${ALPINE_VERSION}.2-aarch64.iso"
 VMDIR="$HOME/alpine-vm"
 CODE_FW="$PREFIX/share/qemu/edk2-aarch64-code.fd"
+DISK_SIZE="2G"
+RAM="1024"
+CPUS="2"
 
 install_qemu() {
     pkg update -y
     pkg upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    pkg install -y qemu-system-aarch64-headless qemu-utils wget expect
+    pkg install -y qemu-system-aarch64-headless qemu-utils curl expect
 }
 
 do_init() {
@@ -23,11 +26,12 @@ do_init() {
 
     if [ ! -f "$VMDIR/alpine.iso" ]; then
         echo ">>> Downloading ${ISO_URL##*/}..."
-        wget -O "$VMDIR/alpine.iso" "$ISO_URL"
+        curl -fL -o "$VMDIR/alpine.iso.part" "$ISO_URL"
+        mv "$VMDIR/alpine.iso.part" "$VMDIR/alpine.iso"
     fi
 
     if [ ! -f "$VMDIR/alpine.qcow2" ]; then
-        qemu-img create -f qcow2 "$VMDIR/alpine.qcow2" 2G
+        qemu-img create -f qcow2 "$VMDIR/alpine.qcow2" "$DISK_SIZE"
     fi
 
     if [ ! -f "$CODE_FW" ]; then
@@ -57,7 +61,7 @@ do_start() {
 
     expect -c "
     set timeout -1
-    spawn qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp cpus=2 \
+    spawn qemu-system-aarch64 -machine virt -cpu max -m $RAM -smp cpus=$CPUS \
         -drive if=pflash,format=raw,readonly=on,file=$CODE_FW \
         -drive if=pflash,format=raw,file=$VMDIR/edk2-aarch64-vars.fd \
         -drive file=$VMDIR/alpine.qcow2,if=virtio,format=qcow2 -snapshot \
