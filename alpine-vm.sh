@@ -1,21 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-ALPINE_VERSION="3.20"
-ALPINE_BASE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}"
-ISO_DIR_URL="${ALPINE_BASE_URL}/releases/aarch64"
-
+ALPINE_VERSION="3.24"
+ISO_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/aarch64/alpine-virt-${ALPINE_VERSION}.2-aarch64.iso"
 VMDIR="$HOME/alpine-vm"
-DISK="$VMDIR/alpine.qcow2"
-ISO="$VMDIR/alpine.iso"
 CODE_FW="$PREFIX/share/qemu/edk2-aarch64-code.fd"
-VARS_FW="$VMDIR/edk2-aarch64-vars.fd"
-DISK_SIZE="8G"
-RAM="2048"
-CPUS="2"
-
-QEMU_BIN="qemu-system-aarch64"
-QEMU_IMG_BIN="qemu-img"
 
 install_qemu() {
     pkg update -y
@@ -23,15 +12,8 @@ install_qemu() {
     pkg install -y qemu-system-aarch64-headless qemu-utils wget expect
 }
 
-resolve_iso_filename() {
-    wget -qO- "${ISO_DIR_URL}/latest-releases.yaml" \
-        | grep -E '^\s*file:\s*alpine-virt-[0-9.]+-aarch64\.iso\s*$' \
-        | head -n1 \
-        | awk '{print $2}'
-}
-
 do_init() {
-    if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
+    if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
         install_qemu
     else
         echo "QEMU already installed, skipping."
@@ -39,19 +21,13 @@ do_init() {
 
     mkdir -p "$VMDIR"
 
-    if [ ! -f "$ISO" ]; then
-        echo ">>> Resolving current Alpine ${ALPINE_VERSION} aarch64 ISO filename..."
-        ISO_FILE="$(resolve_iso_filename)"
-        if [ -z "$ISO_FILE" ]; then
-            echo "Could not resolve ISO filename from ${ISO_DIR_URL}/latest-releases.yaml" >&2
-            exit 1
-        fi
-        echo ">>> Downloading ${ISO_FILE}..."
-        wget -O "$ISO" "${ISO_DIR_URL}/${ISO_FILE}"
+    if [ ! -f "$VMDIR/alpine.iso" ]; then
+        echo ">>> Downloading ${ISO_URL##*/}..."
+        wget -O "$VMDIR/alpine.iso" "$ISO_URL"
     fi
 
-    if [ ! -f "$DISK" ]; then
-        "$QEMU_IMG_BIN" create -f qcow2 "$DISK" "$DISK_SIZE"
+    if [ ! -f "$VMDIR/alpine.qcow2" ]; then
+        qemu-img create -f qcow2 "$VMDIR/alpine.qcow2" 2G
     fi
 
     if [ ! -f "$CODE_FW" ]; then
@@ -60,17 +36,19 @@ do_init() {
         exit 1
     fi
 
-    if [ ! -f "$VARS_FW" ]; then
+    if [ ! -f "$VMDIR/edk2-aarch64-vars.fd" ]; then
         # NVRAM vars file must match the code file's size exactly.
-        FW_SIZE=$(stat -c%s "$CODE_FW")
-        dd if=/dev/zero of="$VARS_FW" bs=1 count=0 seek="$FW_SIZE" 2>/dev/null
+        dd if=/dev/zero of="$VMDIR/edk2-aarch64-vars.fd" bs=1 count=0 seek="$(stat -c%s "$CODE_FW")" 2>/dev/null
     fi
 
     echo "Init complete. Run with --start to boot the VM."
 }
 
 do_start() {
-    if ! command -v "$QEMU_BIN" >/dev/null 2>&1 || [ ! -f "$DISK" ] || [ ! -f "$ISO" ] || [ ! -f "$VARS_FW" ]; then
+    if ! command -v qemu-system-aarch64 >/dev/null 2>&1 \
+        || [ ! -f "$VMDIR/alpine.qcow2" ] \
+        || [ ! -f "$VMDIR/alpine.iso" ] \
+        || [ ! -f "$VMDIR/edk2-aarch64-vars.fd" ]; then
         echo "VM not initialized. Run with --init first."
         exit 1
     fi
@@ -79,11 +57,11 @@ do_start() {
 
     expect -c "
     set timeout -1
-    spawn $QEMU_BIN -machine virt -cpu max -m $RAM -smp cpus=$CPUS \
+    spawn qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp cpus=2 \
         -drive if=pflash,format=raw,readonly=on,file=$CODE_FW \
-        -drive if=pflash,format=raw,file=$VARS_FW \
-        -drive file=$DISK,if=virtio,format=qcow2 -snapshot \
-        -cdrom $ISO \
+        -drive if=pflash,format=raw,file=$VMDIR/edk2-aarch64-vars.fd \
+        -drive file=$VMDIR/alpine.qcow2,if=virtio,format=qcow2 -snapshot \
+        -cdrom $VMDIR/alpine.iso \
         -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
         -device virtio-net-pci,netdev=n1 -nographic
 
@@ -130,15 +108,9 @@ do_clean() {
 }
 
 case "$1" in
-    --init)
-        do_init
-        ;;
-    --start)
-        do_start
-        ;;
-    --clean)
-        do_clean
-        ;;
+    --init)  do_init ;;
+    --start) do_start ;;
+    --clean) do_clean ;;
     *)
         echo "Usage: $0 --init|--start|--clean"
         exit 1
